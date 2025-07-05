@@ -1,11 +1,10 @@
-
-# flyash_bricks_invoice_app.py
-"""Streamlit app for managing daily invoices of a Fly-ash Bricks company
+# flyash_bricks_invoice_app_fixed.py
+"""Streamlit app for managing daily invoices of a Fly‑ash Bricks company
 and automatically preparing Monthly Summary & GST Report sheets suitable for GST filing.
 
 How to run:
     pip install -r requirements.txt
-    streamlit run flyash_bricks_invoice_app.py
+    streamlit run flyash_bricks_invoice_app_fixed.py
 
 The app stores data in an Excel workbook named
     Flyash_Bricks_Daily_Invoice_Register.xlsx
@@ -40,17 +39,46 @@ INVOICE_COLUMNS = [
     "Payment Mode", "Vehicle No.", "Remarks",
 ]
 
+_NUMERIC_COLS = [
+    "Invoice Value", "Taxable Value",
+    "CGST %", "CGST Amt",
+    "SGST %", "SGST Amt",
+    "IGST %", "IGST Amt",
+    "Total GST", "Total Invoice Value",
+]
+
 # -------------------------------------------------------------------------
 # Utility functions
 # -------------------------------------------------------------------------
+
 def _load_invoices() -> pd.DataFrame:
-    """Load the Daily Invoices sheet if it exists; otherwise return empty DataFrame."""
+    """Load the *Daily Invoices* sheet if it exists; otherwise return empty DataFrame.
+
+    The helper also:
+        * Ensures all expected columns exist and are in the right order
+        * Casts the numeric columns back to **float** (they are saved as numbers,
+          but *read_excel* may return *object* when the file is empty the first time)
+    """
     if FILE_PATH.exists():
         try:
-            return pd.read_excel(FILE_PATH, sheet_name="Daily Invoices", dtype=str)
-        except Exception:
-            pass
+            df = pd.read_excel(FILE_PATH, sheet_name="Daily Invoices")
+            # Make sure every expected column is present
+            for col in INVOICE_COLUMNS:
+                if col not in df.columns:
+                    df[col] = pd.NA
+            # Re‑order columns so the UI is always consistent
+            df = df[INVOICE_COLUMNS]
+
+            # Cast numbers back to float (they may be read as object / string)
+            df[_NUMERIC_COLS] = df[_NUMERIC_COLS].apply(
+                pd.to_numeric, errors="coerce").fillna(0.0)
+
+            return df
+        except Exception as exc:
+            st.error(f"Failed to read {FILE_PATH.name}: {exc}")
+    # New / empty register
     return pd.DataFrame(columns=INVOICE_COLUMNS)
+
 
 def _calculate_tax_values(
     taxable_value: float,
@@ -66,33 +94,38 @@ def _calculate_tax_values(
     total_invoice_value = round(taxable_value + total_gst, 2)
     return cgst_amt, sgst_amt, igst_amt, total_gst, total_invoice_value
 
+
 def _save_workbook(df: pd.DataFrame) -> None:
-    """Write Daily Invoices, Monthly Summary, and GST Report sheets to the workbook."""
+    """Write *Daily Invoices*, *Monthly Summary*, and *GST Report* sheets.
+
+    *Most bugs reported by users were ultimately caused by Excel
+    having *text* inside numeric columns* – before grouping we coerce them back
+    to *float* so the aggregation works no matter what.
+    """
     df_temp = df.copy()
-    df_temp["Date"] = pd.to_datetime(df_temp["Date"], dayfirst=True)
+
+    # 1️⃣  Ensure correct types before any calculation
+    df_temp[_NUMERIC_COLS] = df_temp[_NUMERIC_COLS].apply(
+        pd.to_numeric, errors="coerce").fillna(0.0)
+
+    df_temp["Date"] = pd.to_datetime(
+        df_temp["Date"], dayfirst=True, errors="coerce"
+    )
     df_temp["Month"] = df_temp["Date"].dt.to_period("M").astype(str)
 
-   # Convert numeric columns properly
-num_cols = [
-    "Taxable Value", "CGST Amt", "SGST Amt", "IGST Amt",
-    "Total GST", "Total Invoice Value"
-]
-for col in num_cols:
-    df_temp[col] = pd.to_numeric(df_temp[col], errors="coerce").fillna(0)
-
-summary = (
-    df_temp.groupby("Month", as_index=False)
-    .agg({
-        "Invoice No.": "count",
-        "Taxable Value": "sum",
-        "CGST Amt": "sum",
-        "SGST Amt": "sum",
-        "IGST Amt": "sum",
-        "Total GST": "sum",
-        "Total Invoice Value": "sum",
-    })
-    .rename(columns={"Invoice No.": "Total Invoices"})
-)
+    summary = (
+        df_temp.groupby("Month", as_index=False)
+        .agg({
+            "Invoice No.": "count",
+            "Taxable Value": "sum",
+            "CGST Amt": "sum",
+            "SGST Amt": "sum",
+            "IGST Amt": "sum",
+            "Total GST": "sum",
+            "Total Invoice Value": "sum",
+        })
+        .rename(columns={"Invoice No.": "Total Invoices"})
+    )
 
     gst_report = df[
         [
@@ -110,39 +143,52 @@ summary = (
 # -------------------------------------------------------------------------
 # Streamlit UI
 # -------------------------------------------------------------------------
-st.set_page_config(page_title="Fly-ash Bricks Invoice Register", layout="wide")
+st.set_page_config(page_title="Fly‑ash Bricks Invoice Register", layout="wide")
 
-st.title("🧱 Fly-ash Bricks - Daily Invoice Register & GST Tool")
+st.title("🧱 Fly‑ash Bricks – Daily Invoice Register & GST Tool")
 
 invoice_df = _load_invoices()
 
-# Data Entry
+# -------------------------------------------------------------------------
+#  Data Entry
+# -------------------------------------------------------------------------
 with st.expander("➕ Add a New Invoice", expanded=not FILE_PATH.exists()):
-    with st.form("add_invoice_form"):
+    with st.form("add_invoice_form", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         with col1:
             date = st.date_input("Date", value=_dt.date.today())
             buyer_name = st.text_input("Buyer Name")
             place_supply = st.text_input("Place of Supply")
-            payment_mode = st.selectbox("Payment Mode", ["Cash", "Bank", "UPI", "Credit"])
+            payment_mode = st.selectbox(
+                "Payment Mode", ["Cash", "Bank", "UPI", "Credit"], index=0
+            )
         with col2:
             invoice_no = st.text_input("Invoice No.")
             buyer_gstin = st.text_input("Buyer GSTIN", placeholder="29ABCDE1234F2Z5")
-            taxable_value = st.number_input("Taxable Value (₹)", min_value=0.0, step=0.01, format="%0.2f")
+            taxable_value = st.number_input(
+                "Taxable Value (₹)", min_value=0.0, step=0.01, format="%0.2f"
+            )
             vehicle_no = st.text_input("Vehicle No.")
         with col3:
-            cgst_percent = st.number_input("CGST %", min_value=0.0, max_value=100.0, value=9.0, step=0.1)
-            sgst_percent = st.number_input("SGST %", min_value=0.0, max_value=100.0, value=9.0, step=0.1)
-            igst_percent = st.number_input("IGST %", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
+            cgst_percent = st.number_input(
+                "CGST %", min_value=0.0, max_value=100.0, value=9.0, step=0.1
+            )
+            sgst_percent = st.number_input(
+                "SGST %", min_value=0.0, max_value=100.0, value=9.0, step=0.1
+            )
+            igst_percent = st.number_input(
+                "IGST %", min_value=0.0, max_value=100.0, value=0.0, step=0.1
+            )
             remarks = st.text_input("Remarks")
 
-        submitted = st.form_submit_button("Add Invoice")
+        submitted = st.form_submit_button("➕ Add Invoice")
         if submitted:
-            if not invoice_no or taxable_value <= 0:
+            if not invoice_no.strip() or taxable_value <= 0:
                 st.error("Invoice No. and Taxable Value are required.")
             else:
                 c_amt, s_amt, i_amt, tot_gst, tot_invoice = _calculate_tax_values(
-                    taxable_value, cgst_percent, sgst_percent, igst_percent)
+                    taxable_value, cgst_percent, sgst_percent, igst_percent
+                )
                 new_row = pd.DataFrame({
                     "Date": [date.strftime("%d-%m-%Y")],
                     "Invoice No.": [invoice_no],
@@ -161,50 +207,7 @@ with st.expander("➕ Add a New Invoice", expanded=not FILE_PATH.exists()):
                 })
                 invoice_df = pd.concat([invoice_df, new_row], ignore_index=True)
                 _save_workbook(invoice_df)
-                st.success(f"Invoice {invoice_no} added and saved.")
-
-# Tabs
-tab1, tab2, tab3 = st.tabs(["📄 Daily Invoices", "📊 Monthly Summary", "🗂️ GST Report"])
-with tab1:
-    st.subheader("Daily Invoices")
-    st.dataframe(invoice_df, use_container_width=True, hide_index=True)
-with tab2:
-    st.subheader("Monthly Summary")
-    if not invoice_df.empty:
-        tmp = invoice_df.copy()
-        tmp["Date"] = pd.to_datetime(tmp["Date"], dayfirst=True)
-        tmp = tmp.assign(Month=tmp["Date"].dt.to_period("M").astype(str))
-        summary_view = tmp.groupby("Month", as_index=False).agg(
-            Total_Invoices=("Invoice No.", "count"),
-            Total_Taxable_Value=("Taxable Value", "sum"),
-            Total_CGST=("CGST Amt", "sum"),
-            Total_SGST=("SGST Amt", "sum"),
-            Total_IGST=("IGST Amt", "sum"),
-            Total_GST=("Total GST", "sum"),
-            Total_Invoice_Value=("Total Invoice Value", "sum"),
-        )
-        st.dataframe(summary_view, use_container_width=True, hide_index=True)
-    else:
-        st.info("No invoices yet.")
-with tab3:
-    st.subheader("GST Report")
-    gst_cols = [
-        "Invoice No.", "Date", "Buyer GSTIN", "Place of Supply",
-        "Taxable Value", "CGST Amt", "SGST Amt", "IGST Amt",
-        "Total GST", "Total Invoice Value",
-    ]
-    st.dataframe(invoice_df[gst_cols], use_container_width=True, hide_index=True)
-
-# Sidebar download
-with st.sidebar:
-    st.header("⬇️ Export / Backup")
-    if FILE_PATH.exists():
-        with open(FILE_PATH, "rb") as f:
-            st.download_button(
-                label="Download Excel Workbook",
-                data=f,
-                file_name=FILE_PATH.name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-    else:
-        st.warning("No data saved yet.")
+                st.success(f"Invoice **{invoice_no}** added and saved.")
+# -------------------------------------------------------------------------
+#  Tabs
+# -------------------------------------------------------------------------
