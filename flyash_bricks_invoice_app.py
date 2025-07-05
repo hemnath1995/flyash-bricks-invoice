@@ -72,19 +72,27 @@ def _save_workbook(df: pd.DataFrame) -> None:
     df_temp["Date"] = pd.to_datetime(df_temp["Date"], dayfirst=True)
     df_temp["Month"] = df_temp["Date"].dt.to_period("M").astype(str)
 
-    summary = (
-        df_temp.groupby("Month", as_index=False)
-        .agg({
-            "Invoice No.": "count",
-            "Taxable Value": "sum",
-            "CGST Amt": "sum",
-            "SGST Amt": "sum",
-            "IGST Amt": "sum",
-            "Total GST": "sum",
-            "Total Invoice Value": "sum",
-        })
-        .rename(columns={"Invoice No.": "Total Invoices"})
-    )
+   # Convert numeric columns properly
+num_cols = [
+    "Taxable Value", "CGST Amt", "SGST Amt", "IGST Amt",
+    "Total GST", "Total Invoice Value"
+]
+for col in num_cols:
+    df_temp[col] = pd.to_numeric(df_temp[col], errors="coerce").fillna(0)
+
+summary = (
+    df_temp.groupby("Month", as_index=False)
+    .agg({
+        "Invoice No.": "count",
+        "Taxable Value": "sum",
+        "CGST Amt": "sum",
+        "SGST Amt": "sum",
+        "IGST Amt": "sum",
+        "Total GST": "sum",
+        "Total Invoice Value": "sum",
+    })
+    .rename(columns={"Invoice No.": "Total Invoices"})
+)
 
     gst_report = df[
         [
